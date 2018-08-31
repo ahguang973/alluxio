@@ -18,14 +18,16 @@ import alluxio.wire.BlockInfo;
 import alluxio.wire.FileBlockInfo;
 import alluxio.wire.WorkerInfo;
 
-import com.google.common.cache.CacheBuilder;
-import com.google.common.cache.CacheLoader;
-import com.google.common.cache.LoadingCache;
-
+import java.util.Comparator;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
 import java.util.Set;
 import java.util.List;
 import java.nio.file.Path;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -41,15 +43,71 @@ public class MetaCache {
 
   private static Path alluxioRootPath = null;
   private static int maxCachedPaths = Configuration.getInt(PropertyKey.FUSE_CACHED_PATHS_MAX);
-  private static LoadingCache<String, MetaCacheData> fcache 
-      = CacheBuilder.newBuilder().maximumSize(maxCachedPaths).build(new MetaCacheLoader());
-  private static LoadingCache<Long, BlockInfoData> bcache 
-      = CacheBuilder.newBuilder().maximumSize(maxCachedPaths).build(new BlockInfoLoader());
+  private static Map<String, MetaCacheData> fcache = new ConcurrentHashMap<String, MetaCacheData>();
+  private static Map<Long, BlockInfoData> bcache = new ConcurrentHashMap<Long, BlockInfoData>();
   private static List<WorkerInfo> workerList = new ArrayList<>();
   private static long lastWorkerListAccess = 0;
   private static boolean attr_cache_enabled = true;
   private static boolean block_cache_enabled = true;
   private static boolean worker_cache_enabled = true;
+
+  /** uri stat **/
+  private static Map<String, Long> mUriStat = new ConcurrentHashMap<String, Long>(256);
+  private static final int mFromLevel = 4;    /* /ava/qn-bucket/1381392906/bucket/file */ 
+  private static final int mToLevel = 6;  
+
+  /**
+   * dir must be ended with /
+   */
+  public static void incUriStat(String uri, long value) {
+    List<String> paths = Arrays.asList(uri.split("/"));
+    if (paths.size() > 0) paths.remove(0);
+    if (paths.size() > 0) paths.remove(paths.size() - 1);
+
+    if (paths.size() < mFromLevel) {
+      return;
+    }
+
+    String key = "/";
+    for (int i = 0; i < mFromLevel; i++) {
+      key = key + paths.get(i) + "/";
+    }
+    for (int i = mFromLevel; i < mToLevel && i < paths.size(); i++) {
+      key = key + paths.get(i) + "/";
+      Long l = mUriStat.get(key);
+      if (l == null) l = 0L;
+      l += value;
+      mUriStat.put(key, l);
+    }
+  }
+
+  public static Map<String, Long> sortUriStat() {
+    Map<String, Long> ret = new HashMap<String, Long>();
+    mUriStat.entrySet().stream().sorted(Map.Entry.comparingByValue(Comparator.reverseOrder()))
+        .forEachOrdered(x -> ret.put(x.getKey(), x.getValue()));
+    return ret;
+  }
+
+  public static void resetUriStat(String uri) {
+    if (uri == null) {
+      mUriStat.clear();
+    } else {
+      mUriStat.entrySet().removeIf(k -> k.getKey().startsWith(uri));
+    }
+  }
+
+  public static void dumpUriStat() {
+    Map<String, Long> m = sortUriStat();
+    for (String key: m.keySet()) {
+      LOG.info("-- uriStat {}:{}", key, m.get(key));
+    }
+  }
+
+  public static long getStat(String uri) {
+    Long ret = mUriStat.get(uri); 
+    return (ret == null) ? 0L : ret;
+  }
+  /** uri stat **/
 
   public static void setAlluxioRootPath(Path path) {
       alluxioRootPath = path;
@@ -106,26 +164,26 @@ public class MetaCache {
       switch (v) {
           case 0: 
               attr_cache_enabled = false; 
-              fcache.invalidateAll();
+              fcache.clear();
               return;
           case 1: 
               attr_cache_enabled = true; 
               return;
           default: 
-              fcache.invalidateAll(); 
+              fcache.clear();
       }
   }
   public static void set_block_cache(int v) {
       switch (v) {
           case 0: 
               block_cache_enabled = false;
-              bcache.invalidateAll();
+              bcache.clear();
               return;
           case 1:
               block_cache_enabled = true;
               return;
           default:
-              bcache.invalidateAll();
+              bcache.clear();
       }
 
   }
@@ -171,7 +229,7 @@ public class MetaCache {
 
   public static URIStatus getStatus(String path) {
       path = resolve(path);
-      MetaCacheData c = fcache.getIfPresent(path);
+      MetaCacheData c = fcache.get(path);
       return (c != null) ? c.getStatus() : null;
   }
 
@@ -180,8 +238,12 @@ public class MetaCache {
               || s.getLength() == 0 || s.getInAlluxioPercentage() != 100) return;
 
       path = resolve(path);
-      MetaCacheData c = fcache.getUnchecked(path);
-      if (c != null) c.setStatus(s);
+      MetaCacheData c = fcache.get(path);
+      if (c == null) {
+        c = new MetaCacheData(path);
+        fcache.put(path, c);
+      }
+      c.setStatus(s);
       if (s.getLength() > 0) {
             for (FileBlockInfo f: s.getFileBlockInfos()) {
               BlockInfo b = f.getBlockInfo();
@@ -192,55 +254,63 @@ public class MetaCache {
 
   public static AlluxioURI getURI(String path) {
       path = resolve(path);
-      MetaCacheData c = fcache.getUnchecked(path); //confirm to original code logic
-      return (c != null) ? c.getURI() : null;
+      MetaCacheData c = fcache.get(path); //confirm to original code logic
+      if (c == null) {
+        c = new MetaCacheData(path);
+        fcache.put(path, c);
+      }
+      return c.getURI();
   }
 
   public static void invalidate(String path) {
       //also invalidate block belonging to the file
       path = resolve(path);
-      MetaCacheData data = fcache.getIfPresent(path);
+      MetaCacheData data = fcache.get(path);
       if (data != null) {
           URIStatus stat = data.getStatus();
           if (stat != null) {
               for (long blockId: stat.getBlockIds()) {
-                  bcache.invalidate(blockId);
+                  bcache.remove(blockId);
               }
           }
       }
-      fcache.invalidate(path);
+      fcache.remove(path);
   }
 
   public static void invalidatePrefix(String prefix) {
       prefix = resolve(prefix);
-      Set<String> keys = fcache.asMap().keySet();
+      Set<String> keys = fcache.keySet();
       for (String k: keys) {
           if (k.startsWith(prefix)) invalidate(k);
       }
   }
 
   public static void invalidateAll() {
-      fcache.invalidateAll();
+      fcache.clear();
   }
 
   public static void addBlockInfoCache(long blockId, BlockInfo info) {
       if (!block_cache_enabled) return;
 
-      BlockInfoData data = bcache.getUnchecked(blockId);
-      if (data != null) data.setBlockInfo(info);
+      BlockInfoData data = bcache.get(blockId);
+      if (data == null) {
+        data = new BlockInfoData(blockId);
+        bcache.put(blockId, data);
+      }
+      data.setBlockInfo(info);
   }
 
   public static BlockInfo getBlockInfoCache(long blockId) {
-      BlockInfoData b = bcache.getIfPresent(blockId);
+      BlockInfoData b = bcache.get(blockId);
       return (b != null) ? b.getBlockInfo() : null;
   }
 
   public static void invalidateBlockInfoCache(long blockId) {
-      bcache.invalidate(blockId);
+      bcache.remove(blockId);
   }
 
   public static void invalidateAllBlockInfoCache() {
-      bcache.invalidateAll();
+      bcache.clear();
   }
 
   static class MetaCacheData {
@@ -288,31 +358,5 @@ public class MetaCache {
           return this.info;
       }
   }
-
-  private static class MetaCacheLoader extends CacheLoader<String, MetaCacheData> {
-
-    /**
-     * Constructs a new {@link MetaCacheLoader}.
-     */
-    public MetaCacheLoader() {}
-
-    @Override
-    public MetaCacheData load(String path) {
-      return new MetaCacheData(path);
-    }
-  }
-
-  private static class BlockInfoLoader extends CacheLoader<Long, BlockInfoData> {
-
-    /**
-     * Constructs a new {@link BlockInfoLoader}.
-     */
-    public BlockInfoLoader() {}
-
-    @Override
-    public BlockInfoData load(Long blockid) {
-      return new BlockInfoData(blockid);
-    }
-  }
-
 }
+

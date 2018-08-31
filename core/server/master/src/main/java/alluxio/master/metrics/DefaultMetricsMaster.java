@@ -13,6 +13,7 @@ package alluxio.master.metrics;
 
 import alluxio.Configuration;
 import alluxio.Constants;
+import alluxio.MetaCache;
 import alluxio.PropertyKey;
 import alluxio.clock.SystemClock;
 import alluxio.heartbeat.HeartbeatContext;
@@ -37,6 +38,7 @@ import alluxio.util.executor.ExecutorServiceFactory;
 
 import com.codahale.metrics.Gauge;
 import com.google.common.annotations.VisibleForTesting;
+
 import org.apache.thrift.TProcessor;
 
 import java.io.IOException;
@@ -59,6 +61,9 @@ public class DefaultMetricsMaster extends AbstractMaster implements MetricsMaste
       new HashSet<>();
   private final MetricsStore mMetricsStore;
   private final HeartbeatThread mClusterMetricsUpdater;
+
+  private final long mTimeout = Configuration.getMs(PropertyKey.FUSE_METRIC_TIMEOUT);
+  private long mLastMs = 0L;
 
   /**
    * Creates a new instance of {@link MetricsMaster}.
@@ -206,6 +211,11 @@ public class DefaultMetricsMaster extends AbstractMaster implements MetricsMaste
   @Override
   public void clientHeartbeat(String clientId, String hostname, List<Metric> metrics) {
     mMetricsStore.putClientMetrics(hostname, clientId, metrics);
+
+    if (System.currentTimeMillis() - mLastMs >= mTimeout * 5) {
+      MetaCache.dumpUriStat();
+      mLastMs = System.currentTimeMillis();
+    }
   }
 
   @Override

@@ -51,6 +51,9 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import alluxio.util.ThreadFactoryUtils;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -94,6 +97,9 @@ final class AlluxioFuseFileSystem extends FuseStubFS {
   private final Map<Long, OpenFileEntry> mOpenFiles;
   private long mNextOpenFileId;
   private final Map<String, Long> mCreateFiles;
+
+  private final ExecutorService mMetricService = Executors.newFixedThreadPool(
+      1, ThreadFactoryUtils.build("fuse-metric-service-%d", true));
 
   /**
    * The idea here to support overwrite (only support truncate with size 0 now) is:
@@ -504,6 +510,7 @@ final class AlluxioFuseFileSystem extends FuseStubFS {
         // Assuming I will never wrap around (2^64 open files are quite a lot anyway)
         mNextOpenFileId += 1;
       }
+      MetaCache.incUriStat(uri.getPath(), 1);
 
     } catch (FileDoesNotExistException e) {
       LOG.debug("File does not exist {}", path, e);

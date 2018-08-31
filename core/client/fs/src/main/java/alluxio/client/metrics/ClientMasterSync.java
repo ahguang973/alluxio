@@ -11,18 +11,24 @@
 
 package alluxio.client.metrics;
 
+import alluxio.Configuration;
+import alluxio.MetaCache;
+import alluxio.PropertyKey;
 import alluxio.client.file.FileSystemContext;
 import alluxio.heartbeat.HeartbeatExecutor;
 import alluxio.metrics.Metric;
 import alluxio.metrics.MetricsSystem;
+import alluxio.util.network.NetworkAddressUtils;
 
 import com.google.common.base.Preconditions;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -40,6 +46,10 @@ public final class ClientMasterSync implements HeartbeatExecutor {
   /** Client for communicating to metrics master. */
   private final MetricsMasterClient mMasterClient;
   private final FileSystemContext mContext;
+
+  private final long mTimeout = Configuration.getMs(PropertyKey.FUSE_METRIC_TIMEOUT);
+  private long mLastMs = 0L;
+  private long mLastDumpMs = 0L;
 
   /**
    * Constructs a new {@link ClientMasterSync}.
@@ -59,6 +69,25 @@ public final class ClientMasterSync implements HeartbeatExecutor {
       metric.setInstanceId(mContext.getId());
       metrics.add(metric.toThrift());
     }
+
+    if (System.currentTimeMillis() - mLastMs >= mTimeout) {
+      Map<String, Long> m = MetaCache.sortUriStat();
+      for (String uri: m.keySet()) {
+        long v = m.get(uri);
+        if (v > 0) {
+          double dv = v;
+          metrics.add(new Metric(MetricsSystem.InstanceType.CLIENT, null, uri, dv).toThrift());
+        }
+      }
+      MetaCache.resetUriStat(null); // clear all
+      mLastMs = System.currentTimeMillis();
+    }
+
+    if (System.currentTimeMillis() - mLastDumpMs >= mTimeout * 5) {
+      MetaCache.dumpUriStat();
+      mLastDumpMs = System.currentTimeMillis();
+    }
+
     try {
       mMasterClient.heartbeat(metrics);
     } catch (IOException e) {

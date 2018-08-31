@@ -2795,6 +2795,13 @@ public final class PropertyKey implements Comparable<PropertyKey> {
           .setConsistencyCheckLevel(ConsistencyCheckLevel.IGNORE)
           .setScope(Scope.NONE)
           .build();
+  public static final PropertyKey FUSE_METRIC_TIMEOUT =
+      new Builder(Name.FUSE_METRIC_TIMEOUT )
+          .setDefaultValue("5min")
+          .setDescription("Timeout to submit fuse metric to master.")
+          .setConsistencyCheckLevel(ConsistencyCheckLevel.IGNORE)
+          .setScope(Scope.NONE)
+          .build();
 
   //
   // Security related properties
@@ -3550,6 +3557,7 @@ public final class PropertyKey implements Comparable<PropertyKey> {
     public static final String FUSE_DEBUG_ENABLED = "alluxio.fuse.debug.enabled";
     public static final String FUSE_FS_NAME = "alluxio.fuse.fs.name";
     public static final String FUSE_MAXWRITE_BYTES = "alluxio.fuse.maxwrite.bytes";
+    public static final String FUSE_METRIC_TIMEOUT= "alluxio.fuse.metric.timeout";
 
     //
     // Security related properties

@@ -126,7 +126,7 @@ public class FileInStream extends InputStream implements BoundedStream, Position
         handleRetryableException(mBlockInStream, e);
         mBlockInStream = null;
       }
-    } while (retry.attemptRetry());
+    } while (retry.attempt());
     throw lastException;
   }
 
@@ -163,7 +163,7 @@ public class FileInStream extends InputStream implements BoundedStream, Position
       } catch (UnavailableException | ConnectException | DeadlineExceededException e) {
         handleRetryableException(mBlockInStream, e);
         mBlockInStream = null;
-        if (!retry.attemptRetry()) {
+        if (!retry.attempt()) {
           throw e;
         }
       }
@@ -224,7 +224,7 @@ public class FileInStream extends InputStream implements BoundedStream, Position
       } catch (UnavailableException | DeadlineExceededException | ConnectException e) {
         handleRetryableException(stream, e);
         stream = null;
-        if (!retry.attemptRetry()) {
+        if (!retry.attempt()) {
           throw e;
         }
       } finally {

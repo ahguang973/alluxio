@@ -11,6 +11,7 @@
 
 package alluxio.master.metrics;
 
+import alluxio.MetaCache;
 import alluxio.collections.IndexDefinition;
 import alluxio.collections.IndexedSet;
 import alluxio.metrics.Metric;
@@ -110,6 +111,7 @@ public class MetricsStore {
     mClientMetrics.removeByField(ID_INDEX, getFullInstanceId(hostname, clientId));
     for (Metric metric : metrics) {
       if (metric.getHostname() == null) {
+        MetaCache.incUriStat(metric.getName(), (long)metric.getValue());
         continue; // ignore metrics whose hostname is null
       }
       mClientMetrics.add(metric);
